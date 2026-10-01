@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/aman-shri/gatekeeper/internal/config"
 )
@@ -185,3 +186,83 @@ func TestGateway_UpstreamUnavailable(t *testing.T) {
 		t.Errorf("expected error code UPSTREAM_UNAVAILABLE, got %q", errResp.Error)
 	}
 }
+
+func TestGateway_RateLimiting(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":"success"}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.NewDefaultConfig()
+	cfg.Routes = []config.Route{
+		{
+			PathPrefix: "/api/limited",
+			TargetURL:  upstream.URL,
+			RateLimit:  2,
+			Window:     10 * time.Second,
+		},
+	}
+
+	gw, err := NewGateway(cfg)
+	if err != nil {
+		t.Fatalf("failed to create gateway: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	clientA := "192.0.2.1:1111"
+	clientB := "192.0.2.2:2222"
+
+	// Request 1 from Client A: Allowed (remaining 1)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/limited/items", nil)
+	req1.RemoteAddr = clientA
+	rec1 := httptest.NewRecorder()
+	gw.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Errorf("Client A req 1: expected 200, got %d", rec1.Code)
+	}
+	if rec1.Header().Get("X-RateLimit-Remaining") != "1" {
+		t.Errorf("Client A req 1: expected remaining 1, got %s", rec1.Header().Get("X-RateLimit-Remaining"))
+	}
+
+	// Request 2 from Client A: Allowed (remaining 0)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/limited/items", nil)
+	req2.RemoteAddr = clientA
+	rec2 := httptest.NewRecorder()
+	gw.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Errorf("Client A req 2: expected 200, got %d", rec2.Code)
+	}
+	if rec2.Header().Get("X-RateLimit-Remaining") != "0" {
+		t.Errorf("Client A req 2: expected remaining 0, got %s", rec2.Header().Get("X-RateLimit-Remaining"))
+	}
+
+	// Request 3 from Client A: Throttled (429)
+	req3 := httptest.NewRequest(http.MethodGet, "/api/limited/items", nil)
+	req3.RemoteAddr = clientA
+	rec3 := httptest.NewRecorder()
+	gw.ServeHTTP(rec3, req3)
+
+	if rec3.Code != http.StatusTooManyRequests {
+		t.Errorf("Client A req 3: expected 429, got %d", rec3.Code)
+	}
+	if rec3.Header().Get("Retry-After") == "" {
+		t.Errorf("Client A req 3: expected Retry-After header, got empty")
+	}
+
+	// Request from Client B: Allowed (independent quota!)
+	reqB := httptest.NewRequest(http.MethodGet, "/api/limited/items", nil)
+	reqB.RemoteAddr = clientB
+	recB := httptest.NewRecorder()
+	gw.ServeHTTP(recB, reqB)
+
+	if recB.Code != http.StatusOK {
+		t.Errorf("Client B req 1: expected 200, got %d", recB.Code)
+	}
+	if recB.Header().Get("X-RateLimit-Remaining") != "1" {
+		t.Errorf("Client B req 1: expected remaining 1, got %s", recB.Header().Get("X-RateLimit-Remaining"))
+	}
+}
+

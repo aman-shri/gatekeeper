@@ -94,6 +94,65 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "negative rate limit",
+			modify: func(c *Config) {
+				c.Routes = []Route{
+					{
+						PathPrefix: "/api/users",
+						TargetURL:  "http://localhost:8081",
+						RateLimit:  -5,
+					},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "rate limit sets default window",
+			modify: func(c *Config) {
+				c.Routes = []Route{
+					{
+						PathPrefix: "/api/users",
+						TargetURL:  "http://localhost:8081",
+						RateLimit:  100,
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "redis enabled with valid config",
+			modify: func(c *Config) {
+				c.Redis = RedisConfig{
+					Enabled: true,
+					Host:    "127.0.0.1",
+					Port:    6379,
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "redis enabled with missing host",
+			modify: func(c *Config) {
+				c.Redis = RedisConfig{
+					Enabled: true,
+					Host:    "",
+					Port:    6379,
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "redis enabled with invalid port",
+			modify: func(c *Config) {
+				c.Redis = RedisConfig{
+					Enabled: true,
+					Host:    "127.0.0.1",
+					Port:    99999,
+				}
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

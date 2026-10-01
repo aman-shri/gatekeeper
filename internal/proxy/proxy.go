@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aman-shri/gatekeeper/internal/config"
+	"github.com/aman-shri/gatekeeper/internal/limiter"
 )
 
 // ErrorResponse represents a structured, machine-parseable error returned to clients.
@@ -19,23 +20,44 @@ type ErrorResponse struct {
 	Status  int    `json:"status"`
 }
 
-// routeHandler binds a specific route configuration to an initialized ReverseProxy.
+// routeHandler binds a specific route configuration to an initialized and middleware-wrapped handler.
 type routeHandler struct {
-	route config.Route
-	proxy *httputil.ReverseProxy
+	route   config.Route
+	handler http.Handler
 }
 
-// Gateway is the core HTTP router and reverse proxy engine.
+// Gateway is the core HTTP router, reverse proxy engine, and rate limiting orchestrator.
 type Gateway struct {
-	routes []routeHandler
+	routes  []routeHandler
+	limiter limiter.Limiter
 }
 
 // NewGateway initializes a Gateway from validated configuration.
+// If Redis is enabled in configuration, it connects to the Redis cluster;
+// otherwise it initializes an in-memory sliding-window limiter.
 func NewGateway(cfg *config.Config) (*Gateway, error) {
+	var l limiter.Limiter
+	var err error
+
+	if cfg.Redis.Enabled {
+		l, err = limiter.NewRedisLimiter(cfg.Redis)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize redis rate limiter: %w", err)
+		}
+	} else {
+		l = limiter.NewMemoryLimiter()
+	}
+
+	return NewGatewayWithLimiter(cfg, l)
+}
+
+// NewGatewayWithLimiter allows constructing a Gateway with an explicit Limiter instance (ideal for testing).
+func NewGatewayWithLimiter(cfg *config.Config, l limiter.Limiter) (*Gateway, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
+	mw := limiter.NewMiddleware(l)
 	handlers := make([]routeHandler, len(cfg.Routes))
 	for i, r := range cfg.Routes {
 		target := r.ParsedTarget
@@ -85,12 +107,23 @@ func NewGateway(cfg *config.Config) (*Gateway, error) {
 		}
 
 		handlers[i] = routeHandler{
-			route: r,
-			proxy: p,
+			route:   r,
+			handler: mw.Wrap(r, p),
 		}
 	}
 
-	return &Gateway{routes: handlers}, nil
+	return &Gateway{
+		routes:  handlers,
+		limiter: l,
+	}, nil
+}
+
+// Close gracefully terminates background rate limiting routines or connection pools.
+func (g *Gateway) Close() error {
+	if g.limiter != nil {
+		return g.limiter.Close()
+	}
+	return nil
 }
 
 // ServeHTTP implements http.Handler, routing requests to upstreams or health checks.
@@ -103,10 +136,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Find matching upstream route (prefix match)
+	// 2. Find matching upstream route (prefix match) and dispatch to wrapped handler
 	for _, rh := range g.routes {
 		if strings.HasPrefix(r.URL.Path, rh.route.PathPrefix) {
-			rh.proxy.ServeHTTP(w, r)
+			rh.handler.ServeHTTP(w, r)
 			return
 		}
 	}

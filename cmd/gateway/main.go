@@ -26,6 +26,25 @@ func main() {
 
 	// 2. Load configuration (with sample upstream route for local demonstration)
 	cfg := config.NewDefaultConfig()
+	if os.Getenv("REDIS_ENABLED") == "true" || os.Getenv("REDIS_ENABLED") == "1" {
+		cfg.Redis.Enabled = true
+		if h := os.Getenv("REDIS_HOST"); h != "" {
+			cfg.Redis.Host = h
+		}
+		if p := os.Getenv("REDIS_PORT"); p != "" {
+			var port int
+			if _, err := fmt.Sscanf(p, "%d", &port); err == nil {
+				cfg.Redis.Port = port
+			}
+		}
+		if pwd := os.Getenv("REDIS_PASSWORD"); pwd != "" {
+			cfg.Redis.Password = pwd
+		}
+		slog.Info("distributed redis rate limiter enabled", "host", cfg.Redis.Host, "port", cfg.Redis.Port)
+	} else {
+		slog.Info("using in-memory sliding-window rate limiter (set REDIS_ENABLED=true for distributed)")
+	}
+
 	cfg.Routes = []config.Route{
 		{
 			PathPrefix:  "/api/v1/mock",
@@ -33,6 +52,7 @@ func main() {
 			StripPrefix: true,
 			RateLimit:   100,
 			Burst:       20,
+			Window:      time.Minute,
 		},
 	}
 
@@ -41,12 +61,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 3. Initialize reverse proxy engine
+	// 3. Initialize reverse proxy engine with rate limiting
 	gw, err := proxy.NewGateway(cfg)
 	if err != nil {
 		slog.Error("failed to construct gateway", "error", err)
 		os.Exit(1)
 	}
+	defer func() { _ = gw.Close() }()
 
 	// 4. Configure HTTP server with production timeouts
 	serverAddr := fmt.Sprintf(":%d", cfg.Port)
