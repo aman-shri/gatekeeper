@@ -1,7 +1,6 @@
 # 🛡️ Gatekeeper
 
 [![Go Version](https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen.svg)]()
 [![Throughput](https://img.shields.io/badge/RateLimiter-4.7M%20ops%2Fsec-orange.svg)]()
 
