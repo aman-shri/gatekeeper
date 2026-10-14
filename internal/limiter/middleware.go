@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/aman-shri/gatekeeper/internal/auth"
 	"github.com/aman-shri/gatekeeper/internal/config"
 )
 
@@ -43,10 +44,20 @@ func (m *Middleware) Wrap(route config.Route, next http.Handler) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientKey := ExtractClientKey(r)
-		scopedKey := fmt.Sprintf("rl:%s:%s", route.PathPrefix, clientKey)
+		quota := route.RateLimit
+		var scopedKey string
 
-		result, err := m.limiter.Allow(r.Context(), scopedKey, route.RateLimit, window)
+		if id, ok := auth.GetIdentity(r.Context()); ok && id != nil {
+			if id.RateLimitOverride > 0 {
+				quota = id.RateLimitOverride
+			}
+			scopedKey = fmt.Sprintf("rl:%s:tenant:%s", route.PathPrefix, id.TenantID)
+		} else {
+			clientKey := ExtractClientKey(r)
+			scopedKey = fmt.Sprintf("rl:%s:%s", route.PathPrefix, clientKey)
+		}
+
+		result, err := m.limiter.Allow(r.Context(), scopedKey, quota, window)
 		if err != nil && result == nil {
 			// In the rare event of complete engine failure, default to pass-through
 			next.ServeHTTP(w, r)

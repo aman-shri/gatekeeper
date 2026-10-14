@@ -153,6 +153,75 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "route with valid auth settings",
+			modify: func(c *Config) {
+				c.Auth.JWTSecret = "my-secret-key-123"
+				c.Routes = []Route{
+					{
+						PathPrefix:    "/api/secure",
+						TargetURL:     "http://localhost:8080",
+						AuthRequired:  true,
+						AuthType:      "jwt",
+						RequiredRoles: []string{"admin"},
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "route with invalid auth_type",
+			modify: func(c *Config) {
+				c.Routes = []Route{
+					{
+						PathPrefix:   "/api/secure",
+						TargetURL:    "http://localhost:8080",
+						AuthRequired: true,
+						AuthType:     "invalid_scheme",
+					},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "route with jwt auth but missing jwt_secret",
+			modify: func(c *Config) {
+				c.Auth.JWTSecret = ""
+				c.Routes = []Route{
+					{
+						PathPrefix:   "/api/secure",
+						TargetURL:    "http://localhost:8080",
+						AuthRequired: true,
+						AuthType:     "jwt",
+					},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "api key with empty key string",
+			modify: func(c *Config) {
+				c.Auth.APIKeys = []APIKeyConfig{
+					{
+						Key:      "",
+						TenantID: "tenant-1",
+					},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "api key with empty tenant_id",
+			modify: func(c *Config) {
+				c.Auth.APIKeys = []APIKeyConfig{
+					{
+						Key:      "some_key",
+						TenantID: "",
+					},
+				}
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

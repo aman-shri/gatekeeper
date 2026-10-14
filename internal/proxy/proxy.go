@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aman-shri/gatekeeper/internal/auth"
 	"github.com/aman-shri/gatekeeper/internal/config"
 	"github.com/aman-shri/gatekeeper/internal/limiter"
 )
@@ -28,8 +29,10 @@ type routeHandler struct {
 
 // Gateway is the core HTTP router, reverse proxy engine, and rate limiting orchestrator.
 type Gateway struct {
-	routes  []routeHandler
-	limiter limiter.Limiter
+	routes       []routeHandler
+	limiter      limiter.Limiter
+	keyStore     auth.KeyStore
+	jwtValidator *auth.JWTValidator
 }
 
 // NewGateway initializes a Gateway from validated configuration.
@@ -57,7 +60,15 @@ func NewGatewayWithLimiter(cfg *config.Config, l limiter.Limiter) (*Gateway, err
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	mw := limiter.NewMiddleware(l)
+	var jwtValidator *auth.JWTValidator
+	if cfg.Auth.JWTSecret != "" {
+		jwtValidator = auth.NewJWTValidator(cfg.Auth.JWTSecret, cfg.Auth.JWTIssuer, cfg.Auth.JWTAudience)
+	}
+	keyStore := auth.NewMemoryKeyStore(cfg.Auth.APIKeys)
+	authMW := auth.NewAuthMiddleware(jwtValidator, keyStore)
+	loggerMW := auth.NewLoggerMiddleware()
+	limiterMW := limiter.NewMiddleware(l)
+
 	handlers := make([]routeHandler, len(cfg.Routes))
 	for i, r := range cfg.Routes {
 		target := r.ParsedTarget
@@ -65,7 +76,7 @@ func NewGatewayWithLimiter(cfg *config.Config, l limiter.Limiter) (*Gateway, err
 		// Initialize Go's production-grade ReverseProxy
 		p := httputil.NewSingleHostReverseProxy(target)
 
-		// Custom Director: rewrites destination URL, path, and tracing headers
+		// Custom Director: rewrites destination URL, path, tracing headers, and tenant context
 		originalDirector := p.Director
 		p.Director = func(req *http.Request) {
 			originalDirector(req)
@@ -74,6 +85,21 @@ func NewGatewayWithLimiter(cfg *config.Config, l limiter.Limiter) (*Gateway, err
 			// Add standard gateway tracing headers
 			req.Header.Set("X-Gateway", "Gatekeeper")
 			req.Header.Set("X-Forwarded-Host", req.Header.Get("Host"))
+
+			// Propagate correlation Request ID
+			if reqID := auth.GetRequestID(req.Context()); reqID != "" {
+				req.Header.Set("X-Request-ID", reqID)
+			}
+
+			// Propagate authenticated multi-tenant identity upstream
+			if id, ok := auth.GetIdentity(req.Context()); ok && id != nil {
+				req.Header.Set("X-Tenant-ID", id.TenantID)
+				req.Header.Set("X-User-ID", id.UserID)
+				req.Header.Set("X-Tenant-Tier", id.Tier)
+				if len(id.Roles) > 0 {
+					req.Header.Set("X-User-Roles", strings.Join(id.Roles, ","))
+				}
+			}
 
 			// Strip prefix if configured (e.g. /api/v1/users -> /users)
 			if r.StripPrefix && strings.HasPrefix(req.URL.Path, r.PathPrefix) {
@@ -106,16 +132,34 @@ func NewGatewayWithLimiter(cfg *config.Config, l limiter.Limiter) (*Gateway, err
 			TLSHandshakeTimeout: 10 * time.Second,
 		}
 
+		// Middleware pipeline: Logger (outer) -> Auth -> RateLimiter -> ReverseProxy (inner)
+		var pipeline http.Handler = p
+		pipeline = limiterMW.Wrap(r, pipeline)
+		pipeline = authMW.Wrap(r, pipeline)
+		pipeline = loggerMW.Wrap(pipeline)
+
 		handlers[i] = routeHandler{
 			route:   r,
-			handler: mw.Wrap(r, p),
+			handler: pipeline,
 		}
 	}
 
 	return &Gateway{
-		routes:  handlers,
-		limiter: l,
+		routes:       handlers,
+		limiter:      l,
+		keyStore:     keyStore,
+		jwtValidator: jwtValidator,
 	}, nil
+}
+
+// KeyStore returns the gateway's active API key store for multi-tenancy.
+func (g *Gateway) KeyStore() auth.KeyStore {
+	return g.keyStore
+}
+
+// JWTValidator returns the gateway's token validator, if configured.
+func (g *Gateway) JWTValidator() *auth.JWTValidator {
+	return g.jwtValidator
 }
 
 // Close gracefully terminates background rate limiting routines or connection pools.

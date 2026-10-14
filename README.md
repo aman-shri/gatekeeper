@@ -138,9 +138,19 @@ go test -bench="." -benchmem ./internal/limiter
 
 ---
 
+* **🔐 Multi-Tenant Auth & Token Verification (Phase 3)**:
+  * **Cryptographic HMAC-SHA256 JWT Verification**: Validates claims, expiration (`exp`), not-before (`nbf`), issuer (`iss`), and audience (`aud`).
+  * **API Key Multi-Tenancy**: In-memory key store with constant-time verification, active/revoked states, and tenant metadata.
+  * **Role-Based Access Control (RBAC)**: Fine-grained route authorization enforcing required tenant roles (e.g. `admin`, `developer`) with structured JSON 401/403 responses.
+  * **Tiered Rate Limiting Overrides**: Dynamically adapts rate limit quotas based on authenticated tenant tier (e.g., Enterprise overrides default route limits).
+  * **Structured `slog` Correlation**: Automatically generates or propagates `X-Request-ID` across contexts and emits structured JSON access logs with millisecond latency and status codes.
+  * **Upstream Identity Propagation**: Enriches proxy requests with `X-Tenant-ID`, `X-User-ID`, `X-Tenant-Tier`, and `X-User-Roles` so upstream microservices don't have to re-verify tokens.
+
+---
+
 ## 🗺️ Roadmap
 - [x] **Phase 1**: Core Architecture (Go module, config loader, reverse proxy engine)
 - [x] **Phase 2**: Atomic Sliding-Window Rate Limiter (Redis Lua + Memory engine + Middleware)
-- [ ] **Phase 3**: Auth & Token Validation (JWT verification, API Key multi-tenancy, structured `slog` context)
+- [x] **Phase 3**: Auth & Token Validation (HMAC JWT verification, API Key multi-tenancy, RBAC authorization, tenant rate-limit overrides, structured `slog` correlation)
 - [ ] **Phase 4**: Load Testing & Profiling (`pprof`, distributed latency benchmarks)
 - [ ] **Phase 5**: Production Readiness (Docker Compose stack, GitHub Actions CI/CD)

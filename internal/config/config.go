@@ -22,9 +22,43 @@ type Route struct {
 	Burst int `json:"burst"`
 	// Window is the sliding window duration for rate limiting (default: 1 minute).
 	Window time.Duration `json:"window"`
+	// AuthRequired indicates whether incoming requests must be authenticated.
+	AuthRequired bool `json:"auth_required"`
+	// AuthType specifies the required authentication mechanism: "api_key", "jwt", or "any" (default: "any").
+	AuthType string `json:"auth_type"`
+	// RequiredRoles defines roles required to access this route (e.g. ["admin", "editor"]).
+	RequiredRoles []string `json:"required_roles"`
 
 	// ParsedTarget is cached after validation to avoid repeated parsing at runtime.
 	ParsedTarget *url.URL `json:"-"`
+}
+
+// APIKeyConfig defines a pre-provisioned tenant API key.
+type APIKeyConfig struct {
+	// Key is the raw secret API key string.
+	Key string `json:"key"`
+	// TenantID uniquely identifies the organization / tenant account.
+	TenantID string `json:"tenant_id"`
+	// Tier identifies the subscription tier (e.g. "free", "pro", "enterprise").
+	Tier string `json:"tier"`
+	// Roles defines permissions / roles granted to this key (e.g. ["read", "write"]).
+	Roles []string `json:"roles"`
+	// RateLimitOverride provides a custom requests-per-window quota (0 means use route limit).
+	RateLimitOverride int `json:"rate_limit_override"`
+	// Enabled determines whether the key is active.
+	Enabled bool `json:"enabled"`
+}
+
+// AuthConfig holds global authentication and multi-tenancy settings.
+type AuthConfig struct {
+	// JWTSecret is the HMAC shared secret used to sign and verify JWT tokens.
+	JWTSecret string `json:"jwt_secret"`
+	// JWTIssuer is the expected token issuer claim ("iss"). Optional.
+	JWTIssuer string `json:"jwt_issuer"`
+	// JWTAudience is the expected token audience claim ("aud"). Optional.
+	JWTAudience string `json:"jwt_audience"`
+	// APIKeys holds the initial list of provisioned API keys for multi-tenancy.
+	APIKeys []APIKeyConfig `json:"api_keys"`
 }
 
 // RedisConfig holds connection settings for the distributed Redis cache & rate limiter.
@@ -46,6 +80,7 @@ type Config struct {
 	IdleTimeout  time.Duration `json:"idle_timeout"`
 	Routes       []Route       `json:"routes"`
 	Redis        RedisConfig   `json:"redis"`
+	Auth         AuthConfig    `json:"auth"`
 }
 
 // NewDefaultConfig returns a production-ready configuration with sensible defaults.
@@ -113,7 +148,32 @@ func (c *Config) Validate() error {
 			route.Window = time.Minute
 		}
 
+		if route.AuthRequired {
+			if route.AuthType == "" {
+				route.AuthType = "any"
+			}
+			switch route.AuthType {
+			case "api_key", "jwt", "any":
+				// Valid auth types
+			default:
+				return fmt.Errorf("route %d: invalid auth_type %q: must be 'api_key', 'jwt', or 'any'", i, route.AuthType)
+			}
+
+			if route.AuthType == "jwt" && c.Auth.JWTSecret == "" {
+				return fmt.Errorf("route %d: jwt auth requires non-empty auth.jwt_secret in config", i)
+			}
+		}
+
 		route.ParsedTarget = parsed
+	}
+
+	for i, key := range c.Auth.APIKeys {
+		if key.Key == "" {
+			return fmt.Errorf("api_key %d: key string cannot be empty", i)
+		}
+		if key.TenantID == "" {
+			return fmt.Errorf("api_key %d: tenant_id cannot be empty", i)
+		}
 	}
 
 	if c.Redis.Enabled {

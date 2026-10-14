@@ -45,6 +45,12 @@ func main() {
 		slog.Info("using in-memory sliding-window rate limiter (set REDIS_ENABLED=true for distributed)")
 	}
 
+	// 2b. Load Auth & JWT settings if provided
+	if jwtSecret := os.Getenv("JWT_SECRET"); jwtSecret != "" {
+		cfg.Auth.JWTSecret = jwtSecret
+		slog.Info("JWT token verification enabled for authenticated routes")
+	}
+
 	cfg.Routes = []config.Route{
 		{
 			PathPrefix:  "/api/v1/mock",
@@ -53,6 +59,16 @@ func main() {
 			RateLimit:   100,
 			Burst:       20,
 			Window:      time.Minute,
+		},
+		{
+			PathPrefix:    "/api/v1/secure",
+			TargetURL:     "https://httpbin.org",
+			StripPrefix:   true,
+			AuthRequired:  true,
+			AuthType:      "any",
+			RequiredRoles: []string{"admin", "developer"},
+			RateLimit:     50,
+			Window:        time.Minute,
 		},
 	}
 
